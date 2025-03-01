@@ -1,0 +1,18 @@
+# Dependencies
+node_modules
+npm-debug.log
+*.pem
+!mock-cert.pem
+
+# Environment variables
+.env
+
+# Build files
+coverage
+dist
+
+# Logs
+logs
+*.log
+npm-debug.log*
+

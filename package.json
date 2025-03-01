@@ -1,0 +1,38 @@
+{
+  "name": "autorelease",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A GitHub App that automates the release management process with AI-powered summaries",
+  "author": "rbkayz",
+  "license": "MIT",
+  "homepage": "https://github.com/rbkayz/autorelease",
+  "keywords": [
+    "probot",
+    "github",
+    "ai",
+    "release",
+    "automation"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx --watch src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "probot": "^13.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "nock": "^14.0.0-beta.5",
+    "opencommit": "^3.2.5",
+    "prettier": "^3.5.2",
+    "prettier-plugin-organize-imports": "^4.1.0",
+    "smee-client": "^2.0.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">= 18"
+  },
+  "type": "module"
+}
