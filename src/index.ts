@@ -1,24 +1,32 @@
-import { Probot, run } from 'probot';
+import { config } from 'dotenv';
+import { Probot, Server } from 'probot';
+import { probotHandler } from './handlers/events';
+import { logger } from './utils/logger';
 
-const app = (app: Probot) => {
-  app.on('issues.opened', async (context) => {
-    const issueComment = context.issue({
-      body: 'Thanks for opening this issue!',
-    });
-    await context.octokit.issues.createComment(issueComment);
+config();
+
+async function startServer() {
+  // Server
+  const server = new Server({
+    Probot: Probot.defaults({
+      appId: process.env.APP_ID,
+      privateKey: process.env.PRIVATE_KEY,
+      secret: process.env.SECRET,
+    }),
+    port: parseInt(process.env.PORT || '8888'),
+    webhookProxy: process.env.WEBHOOK_PROXY_URL,
   });
-  // For more information on building apps:
-  // https://probot.github.io/docs/
 
-  // To get your app running against GitHub, see:
-  // https://probot.github.io/docs/development/
-
-  app.on('pull_request.opened', async (context) => {
-    const pr = context.payload.pull_request;
-    const { number, title, user, body } = pr;
-
-    console.log(JSON.stringify(pr, null, 2));
+  // Health check route
+  server.router().get('/health', (req, res) => {
+    res.send({ message: 'ok' });
   });
-};
 
-run(app);
+  await server.load(probotHandler);
+
+  server.start().then(() => {
+    logger.info('Server is running on port 8888');
+  });
+}
+
+startServer();
