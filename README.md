@@ -10,7 +10,7 @@ A GitHub App that automates the release management process with AI-powered summa
 - **Release Creation**: Automatically creates GitHub releases when PRs are merged from staging to main
 - **Changelog Management**: Updates CHANGELOG.md with each release, including AI-generated feature summaries
 
-Perfect for teams looking to reduce manual work in the release process while improving the quality of release notes and changelogs.
+Perfect for teams looking to reduce manual work in the release process while improving the quality of release notes and changelogs
 
 ## Installation
 
