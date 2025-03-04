@@ -15,7 +15,7 @@ export class ConfigService {
   static readonly DEFAULT_CONFIG: RepoConfig = {
     // GitHub repository details
     branches: {
-      release: 'release',
+      release: 'main',
       staging: 'staging',
     },
 
@@ -88,7 +88,6 @@ export class ConfigService {
 
     this.logger = logger.child({
       repo_name: repository.name,
-      owner: repository.owner.email,
       id: repository.id,
     });
   }
@@ -98,11 +97,12 @@ export class ConfigService {
    */
   public async loadConfig(): Promise<RepoConfig> {
     try {
-      const { data: configFile } = await this.context.octokit.repos.getContent({
-        owner: this.context.repo().owner,
-        repo: this.context.repo().repo,
-        path: '.github/release-manager.json',
-      });
+      const { data: configFile, status } =
+        await this.context.octokit.repos.getContent({
+          owner: this.context.repo().owner,
+          repo: this.context.repo().repo,
+          path: '.github/release-manager.json',
+        });
 
       // Decode config file
       if ('content' in configFile) {
@@ -123,9 +123,11 @@ export class ConfigService {
       }
 
       throw new Error('Invalid config file format');
-    } catch (error) {
-      this.logger.error('Error loading configuration:', error);
-      return ConfigService.DEFAULT_CONFIG;
+    } catch (error: any) {
+      if (error.status === 404) {
+        return ConfigService.DEFAULT_CONFIG;
+      }
+      throw error;
     }
   }
 

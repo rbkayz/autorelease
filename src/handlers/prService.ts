@@ -1,6 +1,11 @@
 import { PullRequest, PullRequestClosedEvent } from '@octokit/webhooks-types';
 import { ChatCompletionCreateParams } from 'openai/resources';
 import { Context } from 'probot';
+import {
+  calculateNewVersion,
+  parseSummary,
+  updateSection,
+} from '../utils/helpers';
 import { ConfigService } from './configService';
 
 export class PRService extends ConfigService {
@@ -12,6 +17,11 @@ export class PRService extends ConfigService {
   /*                                 PR HELPERS                                 */
   /* -------------------------------------------------------------------------- */
 
+  /**
+   * Retrieves detailed information about a pull request including diff stats and commit messages.
+   * @param pr - The pull request object to get details for
+   * @returns A detailed object containing PR title, body, diff statistics, and commit messages
+   */
   async getPRDetails(pr: PullRequest) {
     // Get PR diff stats
     const diffStats = await this.getDiffStats(pr.number);
@@ -38,6 +48,11 @@ export class PRService extends ConfigService {
     };
   }
 
+  /**
+   * Gets detailed diff statistics for a pull request by analyzing the diff content.
+   * @param prNumber - The PR number to get diff stats for
+   * @returns Object containing changed files list, summary of changes, and truncated diff content
+   */
   async getDiffStats(prNumber: number) {
     // Get diff content
     const diff = await this.context.octokit.pulls.get({
@@ -80,6 +95,10 @@ export class PRService extends ConfigService {
   /*                  HANDLE WHEN FEATURE IS MERGED TO STAGING                  */
   /* -------------------------------------------------------------------------- */
 
+  /**
+   * Handles the logic when a feature PR is merged to the staging branch.
+   * Generates an AI summary of the changes and updates the staging-to-release PR.
+   */
   public async handleFeatureMergedToStaging() {
     const payload = this.context.payload as PullRequestClosedEvent & {
       action: 'closed';
@@ -100,7 +119,8 @@ export class PRService extends ConfigService {
       },
       {
         role: 'user',
-        content: `Generate a concise, well-written summary of this feature that was just merged into the staging branch. The summary should explain what the feature does and its business value.
+        content: `Analyze this pull request and generate a concise, well-written summary of the changes. 
+          Categorize them as either 'Features' or 'Fixes / Improvements'.
           
           PR Title: ${prDetails.title}
           PR Description: ${prDetails.body}
@@ -114,7 +134,16 @@ export class PRService extends ConfigService {
           Commit messages:
           ${prDetails.commitMessages}
           
-          Write the summary as a markdown list starting with "## Feature Summary" followed by bullets of the main points.`,
+          Return your response in exactly this format:
+          
+          Features
+          - [bullet points of new features, if any]
+          
+          Fixes / Improvements
+          - [bullet points of fixes or improvements, if any]
+          
+          If there are no entries for a category, include the heading but leave the bullet points empty.
+          Each bullet point should be concise and start with a dash (-).`,
       },
     ];
 
@@ -133,35 +162,166 @@ export class PRService extends ConfigService {
     this.logger.info('Successfully updated draft PR with AI summary');
   }
 
+  /**
+   * Updates (or creates if it doesn't exist) a PR from staging to release branch
+   * with the AI-generated summary of changes.
+   * @param aiSummary - The AI-generated summary text of the changes
+   */
   async updateStagingToReleasePR(aiSummary: string): Promise<void> {
     // Find the draft PR
     const draftPR = await this.findStagingToReleasePR();
 
-    if (!draftPR) {
+    let prToUpdate = draftPR?.number;
+
+    if (!prToUpdate) {
       this.logger.info('No draft PR found to release branch');
 
       // Create a new draft PR
-      const newPR = await this.createDraftPR();
+      const { data: newPR } = await this.context.octokit.pulls.create({
+        owner: this.context.repo().owner,
+        repo: this.context.repo().repo,
+        title: `Updating ${this.config.release?.prefix ?? 'v'}${await this.getCurrentVersion()}`,
+        head: this.config.branches?.staging ?? 'staging',
+        base: this.config.branches?.release ?? 'main',
+      });
 
-      // Update the new PR with AI summary
-      await this.updatePRWithAISummary(newPR.number, aiSummary);
-      return;
+      prToUpdate = newPR.number;
     }
 
     // Update the existing PR with AI summary
-    await this.updatePRWithAISummary(draftPR.number, aiSummary);
+    await this.updatePRWithAISummary(prToUpdate, aiSummary);
+
+    // Add comment to the PR
+    await this.addSummaryComment(prToUpdate, aiSummary);
+
+    // Update PR title with version information
+    await this.updatePRTitle(prToUpdate, aiSummary);
+  }
+
+  /**
+   * Updates the PR title with semantic version information based on AI analysis.
+   * Calls the AI to determine version type (MAJOR/MINOR/PATCH) and generate a concise summary.
+   * @param prNumber - The PR number to update
+   * @param aiSummary - The AI-generated summary to analyze for versioning purposes
+   */
+  async updatePRTitle(prNumber: number, aiSummary: string): Promise<void> {
+    // Get current PR details
+    const { data: pr } = await this.context.octokit.pulls.get({
+      owner: this.context.repo().owner,
+      repo: this.context.repo().repo,
+      pull_number: prNumber,
+    });
+
+    const messages: ChatCompletionCreateParams['messages'] = [
+      {
+        role: 'system',
+        content:
+          this.config.ai?.versionTypePrompt ??
+          'You are a versioning expert who helps determine version changes and creates concise summaries.',
+        name: 'system',
+      },
+      {
+        role: 'user',
+        content: `Based on the following PR body and changes summary:
+        
+        PR Body:
+        ${pr.body || ''}
+        
+        Changes Summary:
+        ${aiSummary}
+        
+        Please provide two things:
+        1. The appropriate semantic version increment type according to semver.org rules:
+           - MAJOR version for incompatible API changes
+           - MINOR version for added functionality in a backwards compatible manner
+           - PATCH version for backwards compatible bug fixes
+        2. A concise one-line summary (maximum 60 characters) that captures the most important aspects of this release
+        
+        Format your response exactly like this:
+        VERSION_TYPE: [MAJOR/MINOR/PATCH]
+        SUMMARY: [Your concise one-line summary]
+        
+        No other explanation is needed.`,
+      },
+    ];
+
+    const response = await this.callOpenAI({ messages });
+
+    if (!response) {
+      this.logger.warn('Failed to get version info from AI, using defaults');
+      // Use defaults if AI fails
+      await this.updatePRTitleWithInfo(
+        prNumber,
+        'PATCH',
+        'New features and improvements'
+      );
+      return;
+    }
+
+    // Parse the response
+    const versionMatch = response.match(/VERSION_TYPE:\s*(MAJOR|MINOR|PATCH)/i);
+    const summaryMatch = response.match(/SUMMARY:\s*(.+?)(?:\n|$)/i);
+
+    const versionType = versionMatch ? versionMatch[1].toUpperCase() : 'PATCH';
+    const summary = summaryMatch
+      ? summaryMatch[1].trim()
+      : 'New features and improvements';
+
+    // Limit summary to 60 characters
+    const oneLine =
+      summary.length > 60 ? summary.substring(0, 57) + '...' : summary;
+
+    await this.updatePRTitleWithInfo(prNumber, versionType, oneLine);
+  }
+
+  /**
+   * Updates the PR title with the format: "<VERSION_TYPE> Release: v<version>: <summary>"
+   * @param prNumber - The PR number to update
+   * @param versionType - The determined version type (MAJOR/MINOR/PATCH)
+   * @param summary - A concise one-line summary of the changes
+   */
+  async updatePRTitleWithInfo(
+    prNumber: number,
+    versionType: string,
+    summary: string
+  ): Promise<void> {
+    // Get current version
+    const currentVersion = await this.getCurrentVersion();
+
+    // Calculate new version based on the determined type
+    const newVersion = calculateNewVersion(
+      currentVersion,
+      versionType.toLowerCase() as 'major' | 'minor' | 'patch'
+    );
+
+    // Create the formatted title
+    const newTitle = `${versionType} Release: ${this.config.release?.prefix ?? 'v'}${newVersion}: ${summary}`;
+
+    // Update PR title
+    await this.context.octokit.pulls.update({
+      owner: this.context.repo().owner,
+      repo: this.context.repo().repo,
+      pull_number: prNumber,
+      title: newTitle,
+    });
+
+    this.logger.info(`Updated PR #${prNumber} title to: ${newTitle}`);
   }
 
   /* -------------------------------------------------------------------------- */
   /*                                   HELPERS                                  */
   /* -------------------------------------------------------------------------- */
 
+  /**
+   * Finds an existing draft PR from staging to release branch.
+   * @returns The found draft PR or undefined if none exists
+   */
   async findStagingToReleasePR() {
     const { data: prs } = await this.context.octokit.pulls.list({
       owner: this.context.repo().owner,
       repo: this.context.repo().repo,
       state: 'open',
-      head: `${this.context.repo().owner}:staging`,
+      head: `${this.context.repo().owner}:${this.config.branches?.staging}`,
       base: this.config.branches?.release ?? 'main',
     });
 
@@ -171,39 +331,11 @@ export class PRService extends ConfigService {
     return draftPR;
   }
 
-  async createDraftPR() {
-    this.logger.info('Creating draft PR from staging to release');
-
-    // Get the current version from the latest release
-    const currentVersion = await this.getCurrentVersion();
-
-    // Calculate the next version (default to patch)
-    const newVersion = this.calculateNewVersion(currentVersion, 'patch');
-
-    // Generate a release summary with placeholder text that will be updated later
-    const releaseSummary = 'New features and improvements';
-
-    // Create standardized release title
-    const releaseTitle = this.generateReleasePRTitle(
-      newVersion,
-      releaseSummary
-    );
-
-    // Create the PR
-    const { data: pr } = await this.context.octokit.pulls.create({
-      owner: this.context.repo().owner,
-      repo: this.context.repo().repo,
-      title: releaseTitle,
-      head: this.config.branches?.staging ?? 'staging',
-      base: this.config.branches?.release ?? 'main',
-      body: `# Draft Release ${this.config.release?.prefix ?? 'v'}${newVersion}\n\n*This is an automated draft PR. The content will be updated when features are merged to staging.*\n\n## Changes\n\n*Pending automated summary*`,
-      draft: true,
-    });
-
-    this.logger.info(`Created draft PR #${pr.number}: ${pr.html_url}`);
-    return pr;
-  }
-
+  /**
+   * Gets the current version from the latest release or tag.
+   * Falls back to 0.0.0 if no releases or tags are found.
+   * @returns The current semantic version string (e.g., "1.2.3")
+   */
   async getCurrentVersion(): Promise<string> {
     try {
       // Try to get latest release
@@ -245,45 +377,25 @@ export class PRService extends ConfigService {
     }
   }
 
-  calculateNewVersion(
-    currentVersion: string,
-    releaseType: 'major' | 'minor' | 'patch'
-  ): string {
-    // Parse current version
-    const versionParts = currentVersion.split('.');
-    const major = parseInt(versionParts[0] || '0', 10);
-    const minor = parseInt(versionParts[1] || '0', 10);
-    const patch = parseInt(versionParts[2] || '0', 10);
-
-    // Calculate new version
-    switch (releaseType) {
-      case 'major':
-        return `${major + 1}.0.0`;
-      case 'minor':
-        return `${major}.${minor + 1}.0`;
-      case 'patch':
-      default:
-        return `${major}.${minor}.${patch + 1}`;
-    }
-  }
-
-  generateReleasePRTitle(version: string, summary: string): string {
-    // Truncate summary if it's too long (keeping it to one line)
-    const maxSummaryLength = 80;
-    const truncatedSummary =
-      summary.length > maxSummaryLength
-        ? `${summary.substring(0, maxSummaryLength - 3)}...`
-        : summary;
-
-    // Format the PR title according to the standardized format
-    return `Release ${version}: ${truncatedSummary}`;
-  }
-
+  /**
+   * Updates the PR body with an AI-generated summary, adding attribution to each bullet point.
+   * Organizes content into appropriate sections (New Features or Bugs/Improvements).
+   * @param prNumber - The PR number to update
+   * @param aiSummary - The AI-generated summary text to add to the PR body
+   */
   async updatePRWithAISummary(
     prNumber: number,
     aiSummary: string
   ): Promise<void> {
     this.logger.info(`Updating PR #${prNumber} with AI summary`);
+
+    // Get the source PR that was merged (from the payload)
+    const payload = this.context.payload as PullRequestClosedEvent & {
+      action: 'closed';
+    };
+    const sourcePR = payload.pull_request;
+    const prAuthor = sourcePR.user?.login || 'Unknown';
+    const prLink = sourcePR.html_url;
 
     // Get current PR body
     const { data: pr } = await this.context.octokit.pulls.get({
@@ -294,20 +406,40 @@ export class PRService extends ConfigService {
 
     let prBody = pr.body || '';
 
-    // Insert AI summary at the beginning of the Features section
-    const featuresHeader = '## Features to be released';
-    if (prBody.includes(featuresHeader)) {
-      const featuresIndex =
-        prBody.indexOf(featuresHeader) + featuresHeader.length;
-      prBody =
-        prBody.substring(0, featuresIndex) +
-        '\n\n' +
-        aiSummary +
-        '\n' +
-        prBody.substring(featuresIndex);
-    } else {
-      prBody = `${featuresHeader}\n\n${aiSummary}\n\n${prBody}`;
+    // Parse the AI summary to separate features from fixes
+    const sections = parseSummary(aiSummary);
+
+    // Add attribution to each bullet and update the PR body
+    for (const section of sections) {
+      if (section.type === 'Features' && section.bullets.length > 0) {
+        for (const bullet of section.bullets) {
+          const bulletWithAttribution = `${bullet} (via [#${sourcePR.number}](${prLink}) by @${prAuthor})`;
+          prBody = updateSection(
+            prBody,
+            '## New Features',
+            bulletWithAttribution
+          );
+        }
+      } else if (
+        section.type === 'Fixes / Improvements' &&
+        section.bullets.length > 0
+      ) {
+        for (const bullet of section.bullets) {
+          const bulletWithAttribution = `${bullet} (via [#${sourcePR.number}](${prLink}) by @${prAuthor})`;
+          prBody = updateSection(
+            prBody,
+            '## Bugs / Improvements',
+            bulletWithAttribution
+          );
+        }
+      }
     }
+
+    // Update timestamp
+    prBody = prBody.replace(
+      /\*Last updated:.*\*/,
+      `*Last updated: ${new Date().toISOString()}*`
+    );
 
     // Update PR
     await this.context.octokit.pulls.update({
@@ -318,5 +450,43 @@ export class PRService extends ConfigService {
     });
 
     this.logger.info(`Updated PR #${prNumber} with AI summary`);
+  }
+
+  /**
+   * Adds a comment to the PR with a summary of the merged changes.
+   * The comment includes the original PR's title, number, author, and the AI-generated summary.
+   * @param prNumber - The PR number to comment on
+   * @param aiSummary - The AI-generated summary to include in the comment
+   */
+  async addSummaryComment(prNumber: number, aiSummary: string): Promise<void> {
+    // Get the source PR that was merged (from the payload)
+    const payload = this.context.payload as PullRequestClosedEvent & {
+      action: 'closed';
+    };
+    const sourcePR = payload.pull_request;
+    const prAuthor = sourcePR.user?.login || 'Unknown';
+    const prTitle = sourcePR.title;
+    const sourcePRNumber = sourcePR.number;
+
+    // Create comment title and body
+    const commentTitle = `### Merged: "${prTitle}" (#${sourcePRNumber}) by @${prAuthor}`;
+
+    // Format the comment body
+    const commentBody = `${commentTitle}
+
+${aiSummary}
+
+---
+*This summary was generated automatically by AI.*`;
+
+    // Add comment to the PR
+    await this.context.octokit.issues.createComment({
+      owner: this.context.repo().owner,
+      repo: this.context.repo().repo,
+      issue_number: prNumber,
+      body: commentBody,
+    });
+
+    this.logger.info(`Added summary comment to PR #${prNumber}`);
   }
 }
