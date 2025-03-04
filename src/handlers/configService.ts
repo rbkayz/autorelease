@@ -7,15 +7,15 @@ import { logger } from '../utils/logger';
 import { RepoConfig } from '../utils/types';
 
 export class ConfigService {
-  public logger: winston.Logger;
   public context: Context;
   public config: RepoConfig = ConfigService.DEFAULT_CONFIG;
   private openai: OpenAI;
+  public logger: winston.Logger;
 
   static readonly DEFAULT_CONFIG: RepoConfig = {
     // GitHub repository details
     branches: {
-      main: 'main',
+      release: 'release',
       staging: 'staging',
     },
 
@@ -71,6 +71,14 @@ export class ConfigService {
 
   constructor(context: Context) {
     this.context = context;
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('OPENAI_API_KEY environment variable is not set');
+    }
+
+    this.openai = new OpenAI({
+      apiKey: apiKey,
+    });
 
     const repository: Repository = (context.payload as any).repository;
 
@@ -82,15 +90,6 @@ export class ConfigService {
       repo_name: repository.name,
       owner: repository.owner.email,
       id: repository.id,
-    });
-
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error('OPENAI_API_KEY environment variable is not set');
-    }
-
-    this.openai = new OpenAI({
-      apiKey: apiKey,
     });
   }
 

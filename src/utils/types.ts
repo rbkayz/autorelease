@@ -1,6 +1,6 @@
 export interface RepoConfig {
   branches?: {
-    main?: string;
+    release?: string;
     staging?: string;
   };
   pr?: {
