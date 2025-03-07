@@ -1,11 +1,7 @@
 import { PullRequest, PullRequestClosedEvent } from '@octokit/webhooks-types';
 import { ChatCompletionCreateParams } from 'openai/resources';
 import { Context } from 'probot';
-import {
-  calculateNewVersion,
-  parseSummary,
-  updateSection,
-} from '../utils/helpers';
+import { calculateNewVersion, parseSummary } from '../utils/helpers';
 import { ConfigService } from './configService';
 
 export class PRService extends ConfigService {
@@ -16,6 +12,12 @@ export class PRService extends ConfigService {
   /* -------------------------------------------------------------------------- */
   /*                                 PR HELPERS                                 */
   /* -------------------------------------------------------------------------- */
+
+  /**
+   * Constants for section names to ensure consistency throughout the code
+   */
+  private readonly FEATURES_SECTION = 'New Features';
+  private readonly BUGS_SECTION = 'Bugs / Improvements';
 
   /**
    * Retrieves detailed information about a pull request including diff stats and commit messages.
@@ -120,7 +122,7 @@ export class PRService extends ConfigService {
       {
         role: 'user',
         content: `Analyze this pull request and generate a concise, well-written summary of the changes. 
-          Categorize them as either 'Features' or 'Fixes / Improvements'.
+          Categorize them as either '${this.FEATURES_SECTION}' or '${this.BUGS_SECTION}'.
           
           PR Title: ${prDetails.title}
           PR Description: ${prDetails.body}
@@ -134,16 +136,18 @@ export class PRService extends ConfigService {
           Commit messages:
           ${prDetails.commitMessages}
           
-          Return your response in exactly this format:
+          Return your response in EXACTLY this format, with these exact section headers:
           
-          Features
+          ${this.FEATURES_SECTION}
           - [bullet points of new features, if any]
           
-          Fixes / Improvements
+          ${this.BUGS_SECTION}
           - [bullet points of fixes or improvements, if any]
           
           If there are no entries for a category, include the heading but leave the bullet points empty.
-          Each bullet point should be concise and start with a dash (-).`,
+          Each bullet point should be concise and start with a dash (-).
+          
+          IMPORTANT: New functionality should go under ${this.FEATURES_SECTION}, while bug fixes and improvements to existing functionality should go under ${this.BUGS_SECTION}.`,
       },
     ];
 
@@ -313,22 +317,77 @@ export class PRService extends ConfigService {
   /* -------------------------------------------------------------------------- */
 
   /**
-   * Finds an existing draft PR from staging to release branch.
-   * @returns The found draft PR or undefined if none exists
+   * Finds an existing PR from staging to release branch.
+   * Includes enhanced debugging and more flexible matching.
+   * @returns The found PR or undefined if none exists
    */
   async findStagingToReleasePR() {
-    const { data: prs } = await this.context.octokit.pulls.list({
-      owner: this.context.repo().owner,
-      repo: this.context.repo().repo,
-      state: 'open',
-      head: `${this.context.repo().owner}:${this.config.branches?.staging}`,
-      base: this.config.branches?.release ?? 'main',
-    });
+    const owner = this.context.repo().owner;
+    const repo = this.context.repo().repo;
+    const stagingBranch = this.config.branches?.staging ?? 'staging';
+    const releaseBranch = this.config.branches?.release ?? 'main';
 
-    // Find draft PR
-    const draftPR = prs.find((pr) => pr.draft === true);
+    this.logger.info(`Looking for PRs from ${stagingBranch} to ${releaseBranch} in ${owner}/${repo}`);
 
-    return draftPR;
+    try {
+      // First, try with the fully qualified head reference
+      const { data: prs } = await this.context.octokit.pulls.list({
+        owner: owner,
+        repo: repo,
+        state: 'open',
+        head: `${owner}:${stagingBranch}`,
+        base: releaseBranch,
+      });
+
+      this.logger.info(`Found ${prs.length} PRs matching the criteria`);
+      
+      if (prs.length === 0) {
+        // If no results, try without owner prefix (sometimes GitHub omits it)
+        const { data: simplePrs } = await this.context.octokit.pulls.list({
+          owner: owner,
+          repo: repo,
+          state: 'open',
+          head: stagingBranch,
+          base: releaseBranch,
+        });
+        
+        this.logger.info(`Retried with simplified branch name, found ${simplePrs.length} PRs`);
+        
+        if (simplePrs.length > 0) {
+          // Log all found PRs for debugging
+          for (const pr of simplePrs) {
+            this.logger.info(`PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref})`);
+          }
+          
+          // Try to find any PR, not just drafts
+          const targetPR = simplePrs.find(pr => pr.draft === true) || simplePrs[0];
+          this.logger.info(`Selected PR #${targetPR.number}`);
+          return targetPR;
+        }
+        
+        return undefined;
+      }
+      
+      // Log all found PRs for debugging
+      for (const pr of prs) {
+        this.logger.info(`PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref})`);
+      }
+
+      // First try to find a draft PR, but if none exists, return any matching PR
+      const draftPR = prs.find((pr) => pr.draft === true);
+      if (draftPR) {
+        this.logger.info(`Found draft PR #${draftPR.number}`);
+        return draftPR;
+      } else if (prs.length > 0) {
+        this.logger.info(`No draft PR found, using PR #${prs[0].number} instead`);
+        return prs[0]; // Return the first matching PR even if it's not a draft
+      }
+
+      return undefined;
+    } catch (error) {
+      this.logger.error(`Error finding staging to release PR: ${error}`);
+      return undefined;
+    }
   }
 
   /**
@@ -388,6 +447,7 @@ export class PRService extends ConfigService {
     aiSummary: string
   ): Promise<void> {
     this.logger.info(`Updating PR #${prNumber} with AI summary`);
+    this.logger.debug(`AI summary: ${aiSummary}`);
 
     // Get the source PR that was merged (from the payload)
     const payload = this.context.payload as PullRequestClosedEvent & {
@@ -407,39 +467,48 @@ export class PRService extends ConfigService {
     let prBody = pr.body || '';
 
     // Parse the AI summary to separate features from fixes
-    const sections = parseSummary(aiSummary);
+    const parsedSections = parseSummary(aiSummary);
+    this.logger.debug(`Parsed sections: ${JSON.stringify(parsedSections)}`);
 
-    // Add attribution to each bullet and update the PR body
-    for (const section of sections) {
-      if (section.type === 'Features' && section.bullets.length > 0) {
-        for (const bullet of section.bullets) {
-          const bulletWithAttribution = `${bullet} (via [#${sourcePR.number}](${prLink}) by @${prAuthor})`;
-          prBody = updateSection(
-            prBody,
-            '## New Features',
-            bulletWithAttribution
-          );
-        }
-      } else if (
-        section.type === 'Fixes / Improvements' &&
-        section.bullets.length > 0
-      ) {
-        for (const bullet of section.bullets) {
-          const bulletWithAttribution = `${bullet} (via [#${sourcePR.number}](${prLink}) by @${prAuthor})`;
-          prBody = updateSection(
-            prBody,
-            '## Bugs / Improvements',
-            bulletWithAttribution
-          );
-        }
-      }
-    }
+    // Add attribution only to the new bullets
+    const featureBullets =
+      parsedSections.find((s) => s.type === this.FEATURES_SECTION)?.bullets ||
+      [];
+    const bugBullets =
+      parsedSections.find((s) => s.type === this.BUGS_SECTION)?.bullets || [];
+
+    this.logger.info(
+      `Found ${featureBullets.length} feature bullets and ${bugBullets.length} bug/improvement bullets`
+    );
+
+    // Process feature bullets - add attribution ONLY to these new bullets
+    const featureBulletsWithAttribution = featureBullets.map(
+      (bullet) =>
+        `- ${bullet} (via [#${sourcePR.number}](${prLink}) by @${prAuthor})`
+    );
+
+    // Process bug/improvement bullets - add attribution ONLY to these new bullets
+    const bugBulletsWithAttribution = bugBullets.map(
+      (bullet) =>
+        `- ${bullet} (via [#${sourcePR.number}](${prLink}) by @${prAuthor})`
+    );
+
+    // Update the PR body by adding only the new bullets with attribution
+    prBody = this.addNewBulletsToBody(
+      prBody, 
+      this.FEATURES_SECTION, 
+      featureBulletsWithAttribution,
+      this.BUGS_SECTION,
+      bugBulletsWithAttribution
+    );
 
     // Update timestamp
     prBody = prBody.replace(
       /\*Last updated:.*\*/,
       `*Last updated: ${new Date().toISOString()}*`
     );
+
+    this.logger.debug(`Updated PR body: ${prBody}`);
 
     // Update PR
     await this.context.octokit.pulls.update({
@@ -450,6 +519,84 @@ export class PRService extends ConfigService {
     });
 
     this.logger.info(`Updated PR #${prNumber} with AI summary`);
+  }
+
+  /**
+   * Adds new bullets to specific sections of the PR body without modifying existing content
+   * @param prBody - The current PR body
+   * @param featuresSection - The name of the features section
+   * @param featureBullets - The new feature bullets to add
+   * @param bugsSection - The name of the bugs/improvements section
+   * @param bugBullets - The new bug bullets to add
+   * @returns The updated PR body
+   */
+  private addNewBulletsToBody(
+    prBody: string,
+    featuresSection: string,
+    featureBullets: string[],
+    bugsSection: string,
+    bugBullets: string[]
+  ): string {
+    // Create section headers if they don't exist
+    if (!prBody.includes(`## ${featuresSection}`)) {
+      prBody += `\n\n## ${featuresSection}\n<!-- New feature summaries will be added here -->\n`;
+    }
+    
+    if (!prBody.includes(`## ${bugsSection}`)) {
+      prBody += `\n\n## ${bugsSection}\n<!-- Bug fixes and improvements will be added here -->\n`;
+    }
+    
+    // Add feature bullets
+    if (featureBullets.length > 0) {
+      // Find the features section
+      const featureRegex = new RegExp(`(## ${featuresSection}.*?)(\\n## |$)`, 's');
+      const featureMatch = prBody.match(featureRegex);
+      
+      if (featureMatch) {
+        // Insert after the header and any HTML comments
+        const sectionContent = featureMatch[1];
+        const insertPoint = sectionContent.match(/<!--.*?-->\n/)?.[0]?.length 
+          ? sectionContent.indexOf('\n', sectionContent?.match(/<!--.*?-->\n/)?.[0]?.length ?? 0) + 1
+          : sectionContent.indexOf('\n') + 1;
+        
+        // Construct the updated section
+        const newSectionContent = 
+          sectionContent.substring(0, insertPoint) + 
+          featureBullets.join('\n') + 
+          (featureBullets.length > 0 ? '\n' : '') + 
+          sectionContent.substring(insertPoint);
+        
+        // Replace the old section with the new one
+        prBody = prBody.replace(featureMatch[1], newSectionContent);
+      }
+    }
+    
+    // Add bug bullets
+    if (bugBullets.length > 0) {
+      // Find the bugs section
+      const bugRegex = new RegExp(`(## ${bugsSection}.*?)(\\n## |$)`, 's');
+      const bugMatch = prBody.match(bugRegex);
+      
+      if (bugMatch) {
+        // Insert after the header and any HTML comments
+        const sectionContent = bugMatch[1];
+        const insertPoint = sectionContent.match(/<!--.*?-->\n/)?.[0]?.length 
+          ? sectionContent.indexOf('\n', sectionContent.match(/<!--.*?-->\n/)?.[0]?.length ?? 0) + 1
+          : sectionContent.indexOf('\n') + 1;
+        
+        // Construct the updated section
+        const newSectionContent = 
+          sectionContent.substring(0, insertPoint) + 
+          bugBullets.join('\n') + 
+          (bugBullets.length > 0 ? '\n' : '') + 
+          sectionContent.substring(insertPoint);
+        
+        // Replace the old section with the new one
+        prBody = prBody.replace(bugMatch[1], newSectionContent);
+      }
+    }
+    
+    return prBody;
   }
 
   /**
@@ -477,7 +624,7 @@ export class PRService extends ConfigService {
 ${aiSummary}
 
 ---
-*This summary was generated automatically by AI.*`;
+_This summary was generated automatically by AI_`;
 
     // Add comment to the PR
     await this.context.octokit.issues.createComment({
@@ -488,5 +635,196 @@ ${aiSummary}
     });
 
     this.logger.info(`Added summary comment to PR #${prNumber}`);
+  }
+
+  /**
+   * Handles the logic when the staging branch is merged to the release branch.
+   * Creates a GitHub release with the appropriate version and release notes.
+   */
+  public async handleStagingMergedToRelease(): Promise<void> {
+    const payload = this.context.payload as PullRequestClosedEvent & {
+      action: 'closed';
+    };
+
+    const pr = payload.pull_request;
+
+    // Verify this is a merge from staging to release
+    if (!pr.merged) {
+      this.logger.info(
+        'PR was closed but not merged, skipping release creation'
+      );
+      return;
+    }
+
+    const headBranch = pr.head.ref;
+    const baseBranch = pr.base.ref;
+    const stagingBranch = this.config.branches?.staging ?? 'staging';
+    const releaseBranch = this.config.branches?.release ?? 'main';
+
+    if (headBranch !== stagingBranch || baseBranch !== releaseBranch) {
+      this.logger.info(
+        `PR #${pr.number} is not from ${stagingBranch} to ${releaseBranch}, skipping release creation`
+      );
+      return;
+    }
+
+    this.logger.info(`Handling staging merged to release: PR #${pr.number}`);
+
+    // Extract version type and version number from PR title
+    // Example PR title: "MINOR Release: v1.2.0: Add user authentication"
+    const titleMatch = pr.title.match(
+      /^(MAJOR|MINOR|PATCH) Release: (v?\d+\.\d+\.\d+):/i
+    );
+    if (!titleMatch) {
+      this.logger.warn(
+        `Cannot parse version from PR title: ${pr.title}, skipping release creation`
+      );
+      return;
+    }
+
+    const [, versionType, versionFromTitle] = titleMatch;
+
+    // Ensure version has the correct prefix from config
+    const versionPrefix = this.config.release?.prefix ?? 'v';
+    const versionWithoutPrefix = versionFromTitle.replace(/^v?/, '');
+    const version = `${versionPrefix}${versionWithoutPrefix}`;
+
+    try {
+      // Create a GitHub release
+      const { data: release } = await this.context.octokit.repos.createRelease({
+        owner: this.context.repo().owner,
+        repo: this.context.repo().repo,
+        tag_name: version,
+        name: version,
+        body: this.formatReleaseNotes(pr.body || '', versionType),
+        target_commitish: releaseBranch,
+        draft: false,
+        prerelease: false,
+      });
+
+      this.logger.info(`Created release ${version}: ${release.html_url}`);
+
+      // Add a release comment to the PR
+      await this.context.octokit.issues.createComment({
+        owner: this.context.repo().owner,
+        repo: this.context.repo().repo,
+        issue_number: pr.number,
+        body: `🎉 Release [${version}](${release.html_url}) has been published!`,
+      });
+    } catch (error) {
+      this.logger.error(`Failed to create release ${version}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Formats the PR body into proper release notes by removing placeholders,
+   * cleaning up internal comments, and adding release metadata.
+   *
+   * @param prBody - The pull request body text to format
+   * @param versionType - The version type (MAJOR/MINOR/PATCH)
+   * @returns Formatted release notes
+   */
+  private formatReleaseNotes(prBody: string, versionType: string): string {
+    // Remove placeholder comments
+    let notes = prBody.replace(/<!-- .* -->/g, '');
+
+    // Remove empty sections
+    notes = notes.replace(/## New Features\s+\n\n/g, '## New Features\n');
+    notes = notes.replace(
+      /## Bugs \/ Improvements\s+\n\n/g,
+      '## Bugs / Improvements\n'
+    );
+
+    // Add release metadata
+    const metadata = [
+      `**Release Type:** ${versionType}`,
+      `**Release Date:** ${new Date().toISOString().split('T')[0]}`,
+    ].join('\n');
+
+    // Inject metadata after the release title
+    const releaseHeaderRegex = /# Release .+\n/;
+    if (releaseHeaderRegex.test(notes)) {
+      notes = notes.replace(
+        releaseHeaderRegex,
+        (match) => `${match}\n${metadata}\n\n`
+      );
+    } else {
+      notes = `${metadata}\n\n${notes}`;
+    }
+
+    // Add footer
+    notes += `\n\n---\n*This release was automatically published by the GitHub Release Bot.*`;
+
+    return notes;
+  }
+
+  /**
+   * Creates an empty commit on the specified branch.
+   * Useful for triggering CI/CD pipelines or marking release events.
+   *
+   * @param branch - The branch to commit to (defaults to the staging branch)
+   * @param message - The commit message (defaults to an automated message)
+   * @returns Information about the created commit
+   */
+  async createEmptyCommit(
+    branch?: string,
+    message?: string
+  ): Promise<{ sha: string; url: string }> {
+    const targetBranch = branch || this.config.branches?.staging || 'staging';
+    const commitMessage =
+      message || `Empty commit [${new Date().toISOString()}]`;
+
+    this.logger.info(
+      `Creating empty commit on ${targetBranch}: "${commitMessage}"`
+    );
+
+    try {
+      // Get the latest commit on the branch
+      const reference = await this.context.octokit.git.getRef({
+        owner: this.context.repo().owner,
+        repo: this.context.repo().repo,
+        ref: `heads/${targetBranch}`,
+      });
+
+      // Get the commit that the branch points to
+      const latestCommit = await this.context.octokit.git.getCommit({
+        owner: this.context.repo().owner,
+        repo: this.context.repo().repo,
+        commit_sha: reference.data.object.sha,
+      });
+
+      // Create a new commit using the same tree (no changes)
+      const newCommit = await this.context.octokit.git.createCommit({
+        owner: this.context.repo().owner,
+        repo: this.context.repo().repo,
+        message: commitMessage,
+        tree: latestCommit.data.tree.sha,
+        parents: [latestCommit.data.sha],
+      });
+
+      // Update the reference to point to the new commit
+      await this.context.octokit.git.updateRef({
+        owner: this.context.repo().owner,
+        repo: this.context.repo().repo,
+        ref: `heads/${targetBranch}`,
+        sha: newCommit.data.sha,
+      });
+
+      this.logger.info(
+        `Successfully created empty commit: ${newCommit.data.sha}`
+      );
+
+      return {
+        sha: newCommit.data.sha,
+        url: `https://github.com/${this.context.repo().owner}/${this.context.repo().repo}/commit/${newCommit.data.sha}`,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Failed to create empty commit on ${targetBranch}:`,
+        error
+      );
+      throw error;
+    }
   }
 }

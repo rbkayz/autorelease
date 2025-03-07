@@ -1,6 +1,6 @@
 import { config } from 'dotenv';
 import { Probot, Server } from 'probot';
-import { probotHandler } from './handlers/events';
+import { probotHandler } from './events';
 import { logger } from './utils/logger';
 
 config();

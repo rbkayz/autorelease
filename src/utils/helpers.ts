@@ -20,33 +20,58 @@ export function calculateNewVersion(
   }
 }
 
-export function parseSummary(
-  summary: string
-): Array<{ type: string; bullets: string[] }> {
-  const result: Array<{ type: string; bullets: string[] }> = [];
-  const lines = summary
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line);
+/**
+ * Parses an AI-generated summary into sections
+ * @param aiSummary - The AI-generated summary text
+ * @returns Array of section objects with type and bullets
+ */
+export function parseSummary(aiSummary: string): { type: string; bullets: string[] }[] {
+  // Define section constants to match those in PRService
+  const FEATURES_SECTION = 'New Features';
+  const BUGS_SECTION = 'Bugs / Improvements';
 
-  let currentSection: { type: string; bullets: string[] } | null = null;
+  // Initialize result with the correct section types
+  const result: { type: string; bullets: string[] }[] = [
+    { type: FEATURES_SECTION, bullets: [] },
+    { type: BUGS_SECTION, bullets: [] }
+  ];
 
-  for (const line of lines) {
-    if (line === 'Features' || line === 'Fixes / Improvements') {
-      // Start a new section
-      if (currentSection) {
-        result.push(currentSection);
+  // If no summary, return empty sections
+  if (!aiSummary || aiSummary.trim() === '') {
+    return result;
+  }
+
+  // Split by sections more accurately - look for section headers
+  const featuresSectionRegex = new RegExp(`${FEATURES_SECTION}[\\s\\S]*?(?=\\s*${BUGS_SECTION}|$)`, 'i');
+  const bugsSectionRegex = new RegExp(`${BUGS_SECTION}[\\s\\S]*$`, 'i');
+
+  const featuresMatch = aiSummary.match(featuresSectionRegex);
+  const bugsMatch = aiSummary.match(bugsSectionRegex);
+
+  // Process features section
+  if (featuresMatch && featuresMatch[0]) {
+    const featuresContent = featuresMatch[0].replace(FEATURES_SECTION, '').trim();
+    const bulletRegex = /^[-*]\s+(.+)$/gm;
+    let match: RegExpExecArray | null;
+    
+    while ((match = bulletRegex.exec(featuresContent)) !== null) {
+      if (match[1] && match[1].trim()) {
+        result[0].bullets.push(match[1].trim());
       }
-      currentSection = { type: line, bullets: [] };
-    } else if (line.startsWith('-') && currentSection) {
-      // Add bullet to current section
-      currentSection.bullets.push(line);
     }
   }
 
-  // Add the last section
-  if (currentSection) {
-    result.push(currentSection);
+  // Process bugs section
+  if (bugsMatch && bugsMatch[0]) {
+    const bugsContent = bugsMatch[0].replace(BUGS_SECTION, '').trim();
+    const bulletRegex = /^[-*]\s+(.+)$/gm;
+    let match: RegExpExecArray | null;
+    
+    while ((match = bulletRegex.exec(bugsContent)) !== null) {
+      if (match[1] && match[1].trim()) {
+        result[1].bullets.push(match[1].trim());
+      }
+    }
   }
 
   return result;

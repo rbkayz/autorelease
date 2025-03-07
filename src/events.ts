@@ -1,8 +1,8 @@
 import { Probot } from 'probot';
-import { PRService } from './prService';
+import { PRService } from './handlers/prService';
 
 export const probotHandler = (app: Probot) => {
-  // Handle when PRs are merged into staging
+  // Handle when PRs are merged into staging or release
   app.on('pull_request.closed', async (context) => {
     const payload = context.payload;
     const pr = payload.pull_request;
@@ -31,12 +31,12 @@ export const probotHandler = (app: Probot) => {
       await prService.handleFeatureMergedToStaging();
     }
 
-    // Case 2: Staging merged to main - create release
+    // Case 2: Staging merged to release/main - create GitHub release
     if (
       baseRef === prService.config.branches?.release &&
       headRef === prService.config.branches?.staging
     ) {
-      // await prService.handleStagingMergedToMain();
+      await prService.handleStagingMergedToRelease();
     }
   });
 };
