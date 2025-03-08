@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@google-cloud/logging-winston": "^6.0.0",
+    "axios": "^1.8.2",
     "dotenv": "^16.4.7",
     "openai": "^4.86.1",
     "probot": "^13.0.1",
