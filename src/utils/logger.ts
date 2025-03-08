@@ -30,7 +30,7 @@ export const logger = winston.createLogger({
   transports: [],
 });
 
-if (process.env.NODE_ENV !== undefined && process.env.NODE_ENV !== 'local') {
+if (process.env.NODE_ENV !== undefined && process.env.NODE_ENV !== 'local' && false) {
   const gcp_winston = new LoggingWinston({
     projectId: 'periskope',
     labels: {
