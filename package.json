@@ -16,7 +16,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx --watch src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "docker:build": "docker build -t rbkayz/autorelease:latest .",
+    "docker:push": "docker push rbkayz/autorelease:latest",
+    "docker:run": "docker run -d -p 8888:8888 --env-file .env --name autorelease rbkayz/autorelease:latest",
+    "docker:stop": "docker stop autorelease && docker rm autorelease"
   },
   "dependencies": {
     "@google-cloud/logging-winston": "^6.0.0",
@@ -37,6 +41,5 @@
   },
   "engines": {
     "node": ">= 18"
-  },
-  "type": "module"
+  }
 }
