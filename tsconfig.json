@@ -101,10 +101,9 @@
   "include": [
     "src/**/*.ts", // Update this path to match the location of your TypeScript files
     "src/**/*.tsx",
-    "**/*.ts",
   ],
   "exclude": [
     "node_modules",
-    "src/test/**/*.ts" // Update this path to match the location of your test TypeScript files
+    "dist" // Update this path to match the location of your test TypeScript files
   ]
 }
