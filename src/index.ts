@@ -1,3 +1,4 @@
+import axios from 'axios';
 import { config } from 'dotenv';
 import { Probot, Server } from 'probot';
 import { probotHandler } from './events';
@@ -19,7 +20,7 @@ async function startServer() {
 
   // Health check route
   server.router().get('/health', (req, res) => {
-    res.send({ message: 'ok' });
+    res.send({ message: 'Service is online' });
   });
 
   await server.load(probotHandler);
@@ -30,3 +31,9 @@ async function startServer() {
 }
 
 startServer();
+
+setInterval(() => {
+  axios.get('http://localhost:8888/health').then((res) => {
+    logger.info(res.data);
+  });
+}, 60000);
