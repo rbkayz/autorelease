@@ -1,94 +1,178 @@
-# AutoRelease: AI Release Manager
+# AutoRelease: AI-Powered Release Management Bot
 
-A GitHub App that automates the release management process with AI-powered summaries
+A GitHub App that automates your release management process using AI to generate summaries, manage version numbers, and create draft PRs and releases.
+
+![GitHub](https://img.shields.io/github/license/rbkayz/autorelease)
+![Node](https://img.shields.io/badge/node->=18-brightgreen)
 
 ## Features
 
-- **Automated Draft PRs**: Automatically creates draft PRs from staging to main when staging is ahead of main
-- **AI-Generated Summaries**: Uses OpenAI to generate concise summaries of features for PR descriptions and changelogs
-- **Smart Version Determination**: Analyzes changes to recommend semantic version increments (MAJOR, MINOR, PATCH)
-- **Release Creation**: Automatically creates GitHub releases when PRs are merged from staging to main
-- **Changelog Management**: Updates CHANGELOG.md with each release, including AI-generated feature summaries
+- **Automated Release Flow**: Seamlessly manages the flow from feature branches to staging to release
+- **AI-Generated Summaries**: Uses OpenAI to create concise, contextual summaries of changes
+- **Smart Version Management**: Automatically determines semantic version increments (MAJOR/MINOR/PATCH) based on AI analysis of changes
+- **Structured Release Notes**: Organizes changes into "New Features" and "Bugs / Improvements" sections
+- **GitHub Releases**: Automatically creates properly tagged GitHub releases when staging is merged to release
+- **PR Attribution**: Tracks the original PR author and number in release notes
 
-Perfect for teams looking to reduce manual work in the release process while improving the quality of release notes and changelogs
+## Table of Contents
+
+- [Installation](#installation)
+  - [As a GitHub App](#as-a-github-app)
+  - [Self-Hosting](#self-hosting)
+  - [Docker Deployment](#docker-deployment)
+- [Configuration](#configuration)
+  - [Configuration File Location](#configuration-file-location)
+  - [Configuration Options](#configuration-options)
+  - [Environment Variables](#environment-variables)
+- [Repository Structure](#repository-structure)
+- [Usage Workflow](#usage-workflow)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## Installation
 
-### Prerequisites
-
-- Node.js 18 or higher
-- A GitHub account with permission to create GitHub Apps
-- An OpenAI API key for AI-generated summaries
-
-### Setup as a GitHub App
+### As a GitHub App
 
 1. **Create a GitHub App**:
-   - Go to your GitHub profile Settings > Developer settings > GitHub Apps
-   - Click "New GitHub App"
-   - Fill in the form with the following details:
-     - **GitHub App name**: Release Manager (or your preferred name)
-     - **Homepage URL**: URL of your GitHub repository or organization
-     - **Webhook URL**: URL where your app will receive webhook events (can be updated later)
-     - **Webhook secret**: Generate a secure random string
-   - Permissions:
+   - Go to GitHub profile → Settings → Developer settings → GitHub Apps → New GitHub App
+   - Fill in required details:
+     - **Name**: AutoRelease (or your preferred name)
+     - **Homepage URL**: Your repository URL
+     - **Webhook URL**: Where your app will receive events (update later)
+     - **Webhook Secret**: Generate a secure random string
+   - Set Permissions:
      - Repository permissions:
        - **Contents**: Read & write
-       - **Issues**: Read & write
        - **Pull requests**: Read & write
+       - **Issues**: Read & write
+       - **Metadata**: Read-only
      - Subscribe to events:
        - **Pull request**
        - **Push**
    - Save the App
 
-2. **Generate a private key**:
-   - Go to your GitHub App settings
+2. **Generate Private Key**:
+   - In your GitHub App settings
    - Under "Private keys", click "Generate a private key"
-   - Save the downloaded key file securely
+   - Save the downloaded .pem file securely
 
 3. **Install the App**:
    - Go to your GitHub App settings
    - Click "Install App" in the sidebar
-   - Choose the repositories where you want to install the app
+   - Choose the repositories where you want to use AutoRelease
 
-### Setup the App Server
+### Self-Hosting
 
-1. **Clone this repository**:
+#### Prerequisites
+- Node.js 18 or higher
+- Yarn or npm
+- OpenAI API key
+
+#### Setup
+
+1. **Clone the repository**:
    ```bash
-   git clone https://github.com/yourusername/release-manager-app.git
-   cd release-manager-app
+   git clone https://github.com/rbkayz/autorelease.git
+   cd autorelease
    ```
 
 2. **Install dependencies**:
    ```bash
-   npm install
+   yarn install
    ```
 
-3. **Create an environment file**:
+3. **Create environment file**:
    Create a `.env` file with the following variables:
    ```
+   # GitHub App Configuration
    APP_ID=your_github_app_id
-   PRIVATE_KEY=your_private_key_content
+   GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nYour private key content with \n for line breaks\n-----END RSA PRIVATE KEY-----\n"
    WEBHOOK_SECRET=your_webhook_secret
+   
+   # Server Configuration
+   PORT=8888
+   WEBHOOK_PROXY_URL=https://smee.io/your-channel-id (optional, for local development)
+   
+   # OpenAI Configuration
    OPENAI_API_KEY=your_openai_api_key
-   OPENAI_MODEL=gpt-4o
    ```
 
-4. **Start the app**:
+4. **Build the application**:
    ```bash
-   npm start
+   yarn build
    ```
 
-### Deploy to a Server
+5. **Start the server**:
+   ```bash
+   yarn start
+   ```
 
-For production use, deploy the app to a server with a public URL. Some options include:
+### Docker Deployment
 
-- **Heroku**: [Deploy Node.js to Heroku](https://devcenter.heroku.com/articles/deploying-nodejs)
-- **AWS EC2**: [Deploy Node.js to AWS](https://docs.aws.amazon.com/sdk-for-javascript/v2/developer-guide/setting-up-node-on-ec2-instance.html)
-- **GitHub Actions**: [Self-hosted runners](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners)
+For easier deployment, you can use Docker:
 
-## Usage
+1. **Build the Docker image**:
+   ```bash
+   yarn docker:build
+   ```
 
-### Repository Setup
+2. **Run with Docker**:
+   ```bash
+   yarn docker:run
+   ```
+
+   This will start the container with the environment variables from your `.env` file.
+
+3. **Push to a Docker registry** (optional):
+   ```bash
+   yarn docker:push
+   ```
+
+#### Additional Docker Commands
+
+- **Stop the container**:
+  ```bash
+  yarn docker:stop
+  ```
+
+- **Combined build, push and run**:
+  ```bash
+  yarn docker:deploy
+  ```
+
+## Configuration
+
+### Configuration File Location
+
+Create a configuration file in your repository at:
+
+## Repository Structure
+
+```
+release-manager-app/
+├── .github/
+│   └── release-manager.json    # Example configuration
+├── src/                        # TypeScript source code
+│   ├── lib/                    # Service modules
+│   │   ├── ai-service.ts       # AI service for generating summaries
+│   │   ├── config-service.ts   # Configuration management
+│   │   ├── pr-service.ts       # PR management service
+│   │   └── release-service.ts  # Release and changelog service
+│   ├── types/                  # TypeScript type definitions
+│   │   ├── probot.d.ts         # Probot type definitions
+│   │   └── octokit.d.ts        # Octokit type definitions
+│   └── index.ts                # Main application entry point
+├── dist/                       # Compiled JavaScript (generated)
+├── .env                        # Environment variables (not committed)
+├── .env.example                # Example environment variables
+├── .gitignore                  # Git ignore file
+├── tsconfig.json               # TypeScript configuration
+├── package.json                # Node.js package config
+└── README.md                   # This README
+```
+
+## Usage Workflow
 
 1. **Branch Structure**:
    - Create a `staging` branch (or configure your preferred branch name in the config)
@@ -103,46 +187,6 @@ For production use, deploy the app to a server with a public URL. Some options i
    - When ready for release, the app creates a draft PR from `staging` to `main`
    - Review the PR, update the version tag if needed, and merge
    - The app automatically creates a GitHub release and updates the changelog
-
-### Configuration
-
-You can customize the app's behavior by creating a `.github/release-manager.json` file in your repository. Here's an example configuration:
-
-```json
-{
-  "branches": {
-    "main": "main",
-    "staging": "staging"
-  },
-  "pr": {
-    "draftTitle": "Release: Staging to Main",
-    "draftBody": "## Features to be released\n\n{features}\n\n---\n*This PR was automatically created by the Release Manager.*"
-  },
-  "release": {
-    "prefix": "v",
-    "createDraft": false,
-    "prerelease": false,
-    "generateReleaseNotes": true
-  },
-  "changelog": {
-    "file": "CHANGELOG.md",
-    "headerFormat": "# Changelog\n\n",
-    "entryFormat": "## {version} ({date})\n\n{features}\n\n"
-  },
-  "releaseTags": {
-    "major": "[MAJOR]",
-    "minor": "[MINOR]",
-    "patch": "[PATCH]"
-  },
-  "ai": {
-    "openai": {
-      "model": "gpt-4o",
-      "temperature": 0.2,
-      "max_tokens": 1000
-    }
-  }
-}
-```
 
 ## Development
 
