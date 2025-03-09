@@ -2,6 +2,8 @@
 
 A GitHub App that automates your release management process using AI to generate summaries, manage version numbers, and create draft PRs and releases.
 
+![AutoRelease Github App](https://github.com/apps/autorelease-ai-release-manager)
+
 ![GitHub](https://img.shields.io/github/license/rbkayz/autorelease)
 ![Node](https://img.shields.io/badge/node->=18-brightgreen)
 
