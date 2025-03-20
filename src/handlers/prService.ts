@@ -1,4 +1,5 @@
 import { PullRequest, PullRequestClosedEvent } from '@octokit/webhooks-types';
+import { OpenAI } from 'openai';
 import { ChatCompletionCreateParams } from 'openai/resources';
 import { Context } from 'probot';
 import { calculateNewVersion, parseSummary } from '../utils/helpers';
@@ -327,7 +328,9 @@ export class PRService extends ConfigService {
     const stagingBranch = this.config.branches?.staging ?? 'staging';
     const releaseBranch = this.config.branches?.release ?? 'main';
 
-    this.logger.info(`Looking for PRs from ${stagingBranch} to ${releaseBranch} in ${owner}/${repo}`);
+    this.logger.info(
+      `Looking for PRs from ${stagingBranch} to ${releaseBranch} in ${owner}/${repo}`
+    );
 
     try {
       // First, try with the fully qualified head reference
@@ -340,7 +343,7 @@ export class PRService extends ConfigService {
       });
 
       this.logger.info(`Found ${prs.length} PRs matching the criteria`);
-      
+
       if (prs.length === 0) {
         // If no results, try without owner prefix (sometimes GitHub omits it)
         const { data: simplePrs } = await this.context.octokit.pulls.list({
@@ -350,27 +353,34 @@ export class PRService extends ConfigService {
           head: stagingBranch,
           base: releaseBranch,
         });
-        
-        this.logger.info(`Retried with simplified branch name, found ${simplePrs.length} PRs`);
-        
+
+        this.logger.info(
+          `Retried with simplified branch name, found ${simplePrs.length} PRs`
+        );
+
         if (simplePrs.length > 0) {
           // Log all found PRs for debugging
           for (const pr of simplePrs) {
-            this.logger.info(`PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref})`);
+            this.logger.info(
+              `PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref})`
+            );
           }
-          
+
           // Try to find any PR, not just drafts
-          const targetPR = simplePrs.find(pr => pr.draft === true) || simplePrs[0];
+          const targetPR =
+            simplePrs.find((pr) => pr.draft === true) || simplePrs[0];
           this.logger.info(`Selected PR #${targetPR.number}`);
           return targetPR;
         }
-        
+
         return undefined;
       }
-      
+
       // Log all found PRs for debugging
       for (const pr of prs) {
-        this.logger.info(`PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref})`);
+        this.logger.info(
+          `PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref})`
+        );
       }
 
       // First try to find a draft PR, but if none exists, return any matching PR
@@ -379,7 +389,9 @@ export class PRService extends ConfigService {
         this.logger.info(`Found draft PR #${draftPR.number}`);
         return draftPR;
       } else if (prs.length > 0) {
-        this.logger.info(`No draft PR found, using PR #${prs[0].number} instead`);
+        this.logger.info(
+          `No draft PR found, using PR #${prs[0].number} instead`
+        );
         return prs[0]; // Return the first matching PR even if it's not a draft
       }
 
@@ -495,8 +507,8 @@ export class PRService extends ConfigService {
 
     // Update the PR body by adding only the new bullets with attribution
     prBody = this.addNewBulletsToBody(
-      prBody, 
-      this.FEATURES_SECTION, 
+      prBody,
+      this.FEATURES_SECTION,
       featureBulletsWithAttribution,
       this.BUGS_SECTION,
       bugBulletsWithAttribution
@@ -541,61 +553,70 @@ export class PRService extends ConfigService {
     if (!prBody.includes(`## ${featuresSection}`)) {
       prBody += `\n\n## ${featuresSection}\n<!-- New feature summaries will be added here -->\n`;
     }
-    
+
     if (!prBody.includes(`## ${bugsSection}`)) {
       prBody += `\n\n## ${bugsSection}\n<!-- Bug fixes and improvements will be added here -->\n`;
     }
-    
+
     // Add feature bullets
     if (featureBullets.length > 0) {
       // Find the features section
-      const featureRegex = new RegExp(`(## ${featuresSection}.*?)(\\n## |$)`, 's');
+      const featureRegex = new RegExp(
+        `(## ${featuresSection}.*?)(\\n## |$)`,
+        's'
+      );
       const featureMatch = prBody.match(featureRegex);
-      
+
       if (featureMatch) {
         // Insert after the header and any HTML comments
         const sectionContent = featureMatch[1];
-        const insertPoint = sectionContent.match(/<!--.*?-->\n/)?.[0]?.length 
-          ? sectionContent.indexOf('\n', sectionContent?.match(/<!--.*?-->\n/)?.[0]?.length ?? 0) + 1
+        const insertPoint = sectionContent.match(/<!--.*?-->\n/)?.[0]?.length
+          ? sectionContent.indexOf(
+              '\n',
+              sectionContent?.match(/<!--.*?-->\n/)?.[0]?.length ?? 0
+            ) + 1
           : sectionContent.indexOf('\n') + 1;
-        
+
         // Construct the updated section
-        const newSectionContent = 
-          sectionContent.substring(0, insertPoint) + 
-          featureBullets.join('\n') + 
-          (featureBullets.length > 0 ? '\n' : '') + 
+        const newSectionContent =
+          sectionContent.substring(0, insertPoint) +
+          featureBullets.join('\n') +
+          (featureBullets.length > 0 ? '\n' : '') +
           sectionContent.substring(insertPoint);
-        
+
         // Replace the old section with the new one
         prBody = prBody.replace(featureMatch[1], newSectionContent);
       }
     }
-    
+
     // Add bug bullets
     if (bugBullets.length > 0) {
       // Find the bugs section
       const bugRegex = new RegExp(`(## ${bugsSection}.*?)(\\n## |$)`, 's');
       const bugMatch = prBody.match(bugRegex);
-      
+
       if (bugMatch) {
         // Insert after the header and any HTML comments
         const sectionContent = bugMatch[1];
-        const insertPoint = sectionContent.match(/<!--.*?-->\n/)?.[0]?.length 
-          ? sectionContent.indexOf('\n', sectionContent.match(/<!--.*?-->\n/)?.[0]?.length ?? 0) + 1
+        const insertPoint = sectionContent.match(/<!--.*?-->\n/)?.[0]?.length
+          ? sectionContent.indexOf(
+              '\n',
+              sectionContent.match(/<!--.*?-->\n/)?.[0]?.length ?? 0
+            ) + 1
           : sectionContent.indexOf('\n') + 1;
-        
+
         // Construct the updated section
-        const newSectionContent = 
-          sectionContent.substring(0, insertPoint) + 
-          bugBullets.join('\n') + 
-          (bugBullets.length > 0 ? '\n' : '') + 
+        const newSectionContent =
+          sectionContent.substring(0, insertPoint) +
+          bugBullets.join('\n') +
+          (bugBullets.length > 0 ? '\n' : '') +
           sectionContent.substring(insertPoint);
-        
+
         // Replace the old section with the new one
         prBody = prBody.replace(bugMatch[1], newSectionContent);
       }
     }
-    
+
     return prBody;
   }
 
@@ -696,7 +717,7 @@ _This summary was generated automatically by AI_`;
         repo: this.context.repo().repo,
         tag_name: version,
         name: version,
-        body: this.formatReleaseNotes(pr.body || '', versionType),
+        body: await this.formatReleaseNotes(pr.body || '', versionType),
         target_commitish: releaseBranch,
         draft: false,
         prerelease: false,
@@ -725,16 +746,16 @@ _This summary was generated automatically by AI_`;
    * @param versionType - The version type (MAJOR/MINOR/PATCH)
    * @returns Formatted release notes
    */
-  private formatReleaseNotes(prBody: string, versionType: string): string {
-    // Remove placeholder comments
-    let notes = prBody.replace(/<!-- .* -->/g, '');
+  private async formatReleaseNotes(
+    prBody: string,
+    versionType: string
+  ): Promise<string> {
+    // Extract existing content from PR body
+    // This will be sent to the AI for summarization
+    const existingContent = prBody.replace(/<!-- .* -->/g, '');
 
-    // Remove empty sections
-    notes = notes.replace(/## New Features\s+\n\n/g, '## New Features\n');
-    notes = notes.replace(
-      /## Bugs \/ Improvements\s+\n\n/g,
-      '## Bugs / Improvements\n'
-    );
+    // Generate AI summary
+    const aiSummary = await this.generateAISummary(existingContent);
 
     // Add release metadata
     const metadata = [
@@ -742,21 +763,72 @@ _This summary was generated automatically by AI_`;
       `**Release Date:** ${new Date().toISOString().split('T')[0]}`,
     ].join('\n');
 
-    // Inject metadata after the release title
+    // Construct final release notes with metadata and AI summary
+    let notes = '';
     const releaseHeaderRegex = /# Release .+\n/;
-    if (releaseHeaderRegex.test(notes)) {
-      notes = notes.replace(
-        releaseHeaderRegex,
-        (match) => `${match}\n${metadata}\n\n`
-      );
+
+    if (releaseHeaderRegex.test(existingContent)) {
+      const releaseTitle = existingContent.match(releaseHeaderRegex)?.[0];
+      notes = `${releaseTitle}\n${metadata}\n\n${aiSummary}`;
     } else {
-      notes = `${metadata}\n\n${notes}`;
+      notes = `# Release\n\n${metadata}\n\n${aiSummary}`;
     }
 
     // Add footer
-    notes += `\n\n---\n*This release was automatically published by the GitHub Release Bot.*`;
+    notes += `\n\n---\n*This release was automatically published by the GitHub Release Bot with AI-generated summary.*`;
 
     return notes;
+  }
+
+  private async generateAISummary(prContent: string): Promise<string> {
+    try {
+      // Assuming you have an OpenAI integration set up
+      const openai = new OpenAI({
+        apiKey: process.env.OPENAI_API_KEY,
+      });
+
+      const prompt = `
+Please summarize the following release notes into a concise, bullet-point format.
+Organize the summary into two sections:
+1. "## New Features" - new functionality and enhancements
+2. "## Bugs / Improvements" - bug fixes and performance improvements
+
+For each section, provide brief bullet points (starting with "-") that clearly describe each change.
+If there are no items for a section, include the section heading with no bullets.
+Be concise and focus on the most important changes.
+
+RELEASE NOTES:
+${prContent}
+`;
+
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4-turbo', // or whatever model you prefer
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are a technical release notes assistant that creates concise summaries.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        temperature: 0.5,
+        max_tokens: 1000,
+      });
+
+      // Extract the content from the AI response
+      const summary = response.choices[0].message.content?.trim();
+      if (!summary) {
+        throw new Error('No summary generated by AI');
+      }
+      return summary;
+    } catch (error) {
+      console.error('Error generating AI summary:', error);
+      // Fallback to original content with basic formatting if AI fails
+      return ['## New Features', '', '## Bugs / Improvements', ''].join('\n');
+    }
   }
 
   /**
