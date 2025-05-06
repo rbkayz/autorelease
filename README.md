@@ -1,6 +1,6 @@
 # AutoRelease: AI-Powered Release Management Bot
 
-A GitHub App that automates your release management process using AI to generate summaries, manage version numbers, and create draft PRs and releases.
+A GitHub App that automates your release management process using AI to generate summaries, manage version numbers, and create draft PRs and releases
 
 ![AutoRelease Github App](https://github.com/apps/autorelease-ai-release-manager)
 
