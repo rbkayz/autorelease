@@ -24,9 +24,11 @@ export const probotHandler = (app: Probot) => {
     await prService.loadConfig();
 
     // Case 1: Feature branch merged into staging - generate AI summary
+    // Only trigger for feature branches (not release/staging branches)
     if (
       baseRef === prService.config.branches?.staging &&
-      headRef !== prService.config.branches?.release
+      headRef !== prService.config.branches?.release &&
+      headRef !== prService.config.branches?.staging
     ) {
       await prService.handleFeatureMergedToStaging();
     }

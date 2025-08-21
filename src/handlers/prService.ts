@@ -109,7 +109,23 @@ export class PRService extends ConfigService {
 
     const pr = payload.pull_request;
 
-    this.logger.info(`Handling feature merged to staging: PR #${pr.number}`);
+    // Additional validation: ensure this is actually a feature branch merge to staging
+    const headBranch = pr.head.ref;
+    const baseBranch = pr.base.ref;
+    const stagingBranch = this.config.branches?.staging ?? 'staging';
+    const releaseBranch = this.config.branches?.release ?? 'main';
+
+    if (baseBranch !== stagingBranch) {
+      this.logger.warn(`PR #${pr.number} is not targeting staging branch (${stagingBranch}), skipping feature processing`);
+      return;
+    }
+
+    if (headBranch === releaseBranch || headBranch === stagingBranch) {
+      this.logger.warn(`PR #${pr.number} is from ${headBranch} branch, not a feature branch, skipping processing`);
+      return;
+    }
+
+    this.logger.info(`Handling feature merged to staging: PR #${pr.number} (${headBranch} → ${baseBranch})`);
 
     // Get PR details
     const prDetails = await this.getPRDetails(pr);
@@ -173,6 +189,8 @@ export class PRService extends ConfigService {
    * @param aiSummary - The AI-generated summary text of the changes
    */
   async updateStagingToReleasePR(aiSummary: string): Promise<void> {
+    this.logger.info('Updating staging-to-release PR with AI summary');
+    
     // Find the draft PR
     const draftPR = await this.findStagingToReleasePR();
 
@@ -319,7 +337,7 @@ export class PRService extends ConfigService {
 
   /**
    * Finds an existing PR from staging to release branch.
-   * Includes enhanced debugging and more flexible matching.
+   * Only finds PRs that are specifically from the staging branch to the release branch.
    * @returns The found PR or undefined if none exists
    */
   async findStagingToReleasePR() {
@@ -359,40 +377,54 @@ export class PRService extends ConfigService {
         );
 
         if (simplePrs.length > 0) {
-          // Log all found PRs for debugging
-          for (const pr of simplePrs) {
+          // Log all found PRs for debugging and validate they are truly staging-to-release
+          const validSimplePRs = simplePrs.filter((pr) => {
+            const isValid = pr.head.ref === stagingBranch && pr.base.ref === releaseBranch;
             this.logger.info(
-              `PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref})`
+              `PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref}) - ${isValid ? 'VALID' : 'INVALID'}`
             );
+            return isValid;
+          });
+
+          if (validSimplePRs.length === 0) {
+            this.logger.info('No valid staging-to-release PRs found in fallback search');
+            return undefined;
           }
 
-          // Try to find any PR, not just drafts
+          // Try to find any valid PR, prefer drafts
           const targetPR =
-            simplePrs.find((pr) => pr.draft === true) || simplePrs[0];
-          this.logger.info(`Selected PR #${targetPR.number}`);
+            validSimplePRs.find((pr) => pr.draft === true) || validSimplePRs[0];
+          this.logger.info(`Selected valid staging-to-release PR #${targetPR.number}`);
           return targetPR;
         }
 
         return undefined;
       }
 
-      // Log all found PRs for debugging
-      for (const pr of prs) {
+      // Log all found PRs for debugging and validate they are truly staging-to-release
+      const validPRs = prs.filter((pr) => {
+        const isValid = pr.head.ref === stagingBranch && pr.base.ref === releaseBranch;
         this.logger.info(
-          `PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref})`
+          `PR #${pr.number}: "${pr.title}" (Draft: ${pr.draft}, Head: ${pr.head.ref}, Base: ${pr.base.ref}) - ${isValid ? 'VALID' : 'INVALID'}`
         );
+        return isValid;
+      });
+
+      if (validPRs.length === 0) {
+        this.logger.info('No valid staging-to-release PRs found');
+        return undefined;
       }
 
-      // First try to find a draft PR, but if none exists, return any matching PR
-      const draftPR = prs.find((pr) => pr.draft === true);
+      // First try to find a draft PR, but if none exists, return any valid matching PR
+      const draftPR = validPRs.find((pr) => pr.draft === true);
       if (draftPR) {
-        this.logger.info(`Found draft PR #${draftPR.number}`);
+        this.logger.info(`Found draft staging-to-release PR #${draftPR.number}`);
         return draftPR;
-      } else if (prs.length > 0) {
+      } else if (validPRs.length > 0) {
         this.logger.info(
-          `No draft PR found, using PR #${prs[0].number} instead`
+          `No draft staging-to-release PR found, using PR #${validPRs[0].number} instead`
         );
-        return prs[0]; // Return the first matching PR even if it's not a draft
+        return validPRs[0]; // Return the first valid matching PR even if it's not a draft
       }
 
       return undefined;
